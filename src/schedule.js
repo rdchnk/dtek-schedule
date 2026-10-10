@@ -1,3 +1,4 @@
+
 import { chromium } from "playwright"
 
 import {
@@ -9,6 +10,7 @@ import {
   deleteLastMessage,
   useSchedule,
 } from "./helpers.js"
+
 import {
   GROUP,
   hours,
@@ -16,21 +18,24 @@ import {
   SHUTDOWNS_DATA_MATCHER,
   SHUTDOWNS_PAGE,
   TELEGRAM_BOT_TOKEN,
-  TELEGRAM_CHAT_ID,
+  TELEGRAM_CHAT_IDS,
   RETRIES_TIMEOUT,
   RETRIES_MAX_COUNT,
 } from "./constants.js"
 
-let sendNotificationRetries = 0
 let getShutdownsDataRetries = 0
 
+// Отримання графіка ДТЕК
 const getShutdownsData = async () => {
   console.log("🌀 Getting shutdowns data...")
 
-  const browser = await chromium.launch({ headless: true })
+  const browser = await chromium.launch({
+    headless: true,
+  })
 
   try {
     const browserPage = await browser.newPage()
+
     await browserPage.goto(SHUTDOWNS_PAGE, {
       waitUntil: "load",
     })
@@ -43,32 +48,44 @@ const getShutdownsData = async () => {
     }
 
     const data = JSON.parse(match[1])
+
     console.log("✅ Getting shutdowns data finished.")
     return data
   } catch (error) {
-    console.error(`❌ Getting shutdowns data failed: ${error.message}.`)
+    console.error(
+      `❌ Getting shutdowns data failed: ${error.message}.`
+    )
   } finally {
     await browser.close()
   }
 
   if (getShutdownsDataRetries < RETRIES_MAX_COUNT) {
     console.log("🌀 Try getting shutdowns data again...")
-    await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
+
+    await new Promise((resolve) =>
+      setTimeout(resolve, RETRIES_TIMEOUT)
+    )
+
     getShutdownsDataRetries++
     return await getShutdownsData()
   }
 
-  throw Error(
-    `❌ Getting shutdowns data failed after ${RETRIES_MAX_COUNT} retries.`
+  throw new Error(
+    `Getting shutdowns data failed after ${RETRIES_MAX_COUNT} retries.`
   )
 }
 
+// Формування погодинного графіка
 function generateSchedule({ data, today }) {
   console.log("🌀 Generating schedule...")
 
   try {
     const hoursStates = data[today][GROUP]
-    if (!hoursStates) throw Error(`group ${GROUP} not found`)
+
+    if (!hoursStates) {
+      throw new Error(`group ${GROUP} not found`)
+    }
+
     const [schedule, setSchedule] = useSchedule([])
 
     hours.forEach((hour) => {
@@ -76,51 +93,85 @@ function generateSchedule({ data, today }) {
 
       switch (state) {
         case PowerState.ON:
-          setSchedule(createPeriod({ hour, power: true }))
+          setSchedule(
+            createPeriod({ hour, power: true })
+          )
           break
 
         case PowerState.OFF:
-          setSchedule(createPeriod({ hour, power: false }))
+          setSchedule(
+            createPeriod({ hour, power: false })
+          )
           break
 
         case PowerState.HALF_ON:
-          setSchedule(createPeriod({ hour, endMin: 30, power: true }))
-          setSchedule(createPeriod({ hour, startMin: 30, power: false }))
+          setSchedule(
+            createPeriod({
+              hour,
+              endMin: 30,
+              power: true,
+            })
+          )
+
+          setSchedule(
+            createPeriod({
+              hour,
+              startMin: 30,
+              power: false,
+            })
+          )
           break
 
         case PowerState.HALF_OFF:
-          setSchedule(createPeriod({ hour, endMin: 30, power: false }))
-          setSchedule(createPeriod({ hour, startMin: 30, power: true }))
+          setSchedule(
+            createPeriod({
+              hour,
+              endMin: 30,
+              power: false,
+            })
+          )
+
+          setSchedule(
+            createPeriod({
+              hour,
+              startMin: 30,
+              power: true,
+            })
+          )
           break
       }
     })
 
     console.log("✅ Generating schedule finished.")
-
     return schedule
   } catch (error) {
-    throw Error(`❌ Generating schedule failed: ${error.message}.`)
+    throw new Error(
+      `❌ Generating schedule failed: ${error.message}.`
+    )
   }
 }
 
+// Формування Telegram-повідомлення
 function generateMessage(schedule = [], update) {
   console.log("🌀 Generating message...")
 
-  const isShutdownsExists = schedule.some(({ power }) => !power)
-  isShutdownsExists
-    ? console.log("🪫 Power shutdowns detected!")
-    : console.log("🔋 No power shutdowns!")
+  const isShutdownsExists = schedule.some(
+    ({ power }) => !power
+  )
 
-  const scheduleText = [
-    ...(isShutdownsExists
-      ? schedule
-          .filter(({ power }) => !power)
-          .map(({ begin, end }) => `🪫 <code>${begin} — ${end}</code>`)
-      : schedule.map(({ begin, end }) => `🔋 <code>${begin} — ${end}</code>`)),
-  ].join("\n")
+  const scheduleText = (
+    isShutdownsExists
+      ? schedule.filter(({ power }) => !power)
+      : schedule
+  )
+    .map(
+      ({ begin, end }) =>
+        `${isShutdownsExists ? "🪫" : "🔋"} <code>${begin} — ${end}</code>`
+    )
+    .join("\n")
 
   const text = [
-    `⚡️ <b>Графік відключень на сьогодні:</b>`,
+    "⚡️ <b>Графік відключень на сьогодні:</b>",
     scheduleText,
     "",
     `📢 <i>${update}</i>`,
@@ -130,80 +181,176 @@ function generateMessage(schedule = [], update) {
   return { text, scheduleText }
 }
 
-async function sendNotification({ text, scheduleText }) {
-  if (!TELEGRAM_BOT_TOKEN) throw Error("❌ Missing telegram bot token.")
-  if (!TELEGRAM_CHAT_ID) throw Error("❌ Missing telegram chat id.")
+// Надсилання повідомлення одному користувачу
+async function sendToChat(chatId, { text, scheduleText }) {
+  let lastMessage = loadLastMessage(chatId) || {}
 
-  console.log("🌀 Sending notification...")
+  const isScheduleChanged =
+    lastMessage.scheduleText !== scheduleText
 
-  const lastMessage = loadLastMessage() || {}
-  const isScheduleChanged = lastMessage.scheduleText !== scheduleText
-  const isEdit = Boolean(lastMessage.message_id) && !isScheduleChanged
-  const isReply = Boolean(lastMessage.message_id) && isScheduleChanged
+  const isEdit =
+    Boolean(lastMessage.message_id) &&
+    !isScheduleChanged
 
-  try {
-    const response = await fetch(
-      `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${
-        isEdit ? "editMessageText" : "sendMessage"
-      }`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          chat_id: TELEGRAM_CHAT_ID,
-          text,
-          parse_mode: "HTML",
-          disable_notification: checkIsNight(),
-          message_id: isEdit ? lastMessage.message_id : undefined,
-          reply_parameters: isReply
-            ? {
-                message_id: lastMessage.message_id,
-                allow_sending_without_reply: true,
-              }
-            : undefined,
-        }),
+  const isReply =
+    Boolean(lastMessage.message_id) &&
+    isScheduleChanged
+
+  const method = isEdit
+    ? "editMessageText"
+    : "sendMessage"
+
+  const payload = {
+    chat_id: chatId,
+    text,
+    parse_mode: "HTML",
+    disable_notification: checkIsNight(),
+  }
+
+  if (isEdit) {
+    payload.message_id = lastMessage.message_id
+  }
+
+  if (isReply) {
+    payload.reply_parameters = {
+      message_id: lastMessage.message_id,
+      allow_sending_without_reply: true,
+    }
+  }
+
+  let lastError
+
+  for (
+    let attempt = 0;
+    attempt <= RETRIES_MAX_COUNT;
+    attempt++
+  ) {
+    try {
+      const response = await fetch(
+        `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/${method}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(payload),
+        }
+      )
+
+      const data = await response.json()
+
+      if (
+        data.description?.includes(
+          "message is not modified"
+        )
+      ) {
+        console.log(
+          `🟡 Chat ${chatId}: message unchanged.`
+        )
+        return
       }
-    )
 
-    const data = await response.json()
+      if (!data.ok) {
+        throw new Error(
+          data.description || "Telegram API error"
+        )
+      }
 
-    if (data.description?.includes("not modified")) {
-      console.log("🟡 Notification not changed.")
+      saveLastMessage(chatId, {
+        ...data.result,
+        scheduleText,
+      })
+
+      console.log(
+        `🟢 Chat ${chatId}: notification sent.`
+      )
+
       return
+    } catch (error) {
+      lastError = error
+
+      console.error(
+        `❌ Chat ${chatId}, attempt ${attempt + 1}: ${error.message}`
+      )
+
+      if (attempt < RETRIES_MAX_COUNT) {
+        await new Promise((resolve) =>
+          setTimeout(resolve, RETRIES_TIMEOUT)
+        )
+      }
     }
-    if (!data.ok) throw Error(data.description)
+  }
 
-    saveLastMessage({ ...data.result, scheduleText })
+  // Якщо редагування старого повідомлення не вдалося,
+  // скидаємо його стан для наступного запуску.
+  if (isEdit) {
+    deleteLastMessage(chatId)
+  }
 
-    console.log("🟢 Notification sent.")
-  } catch (error) {
-    console.error(`❌ Sending notification failed: ${error.message}.`)
-    deleteLastMessage()
+  throw new Error(
+    `Chat ${chatId}: ${lastError?.message}`
+  )
+}
 
-    if (sendNotificationRetries < RETRIES_MAX_COUNT) {
-      console.log("🌀 Try sending notification again...")
-      await new Promise((resolve) => setTimeout(resolve, RETRIES_TIMEOUT))
-      sendNotificationRetries++
-      return await sendNotification({ text, scheduleText })
+// Розсилка всім отримувачам
+async function sendNotification(message) {
+  if (!TELEGRAM_BOT_TOKEN) {
+    throw new Error("Missing Telegram bot token.")
+  }
+
+  if (!TELEGRAM_CHAT_IDS.length) {
+    throw new Error("Missing Telegram chat IDs.")
+  }
+
+  console.log(
+    `🌀 Sending to ${TELEGRAM_CHAT_IDS.length} chats...`
+  )
+
+  const results = await Promise.allSettled(
+    TELEGRAM_CHAT_IDS.map((chatId) =>
+      sendToChat(chatId, message)
+    )
+  )
+
+  let failed = 0
+
+  results.forEach((result, index) => {
+    if (result.status === "rejected") {
+      failed++
+
+      console.error(
+        `❌ Chat ${TELEGRAM_CHAT_IDS[index]}: ${result.reason.message}`
+      )
     }
+  })
 
-    throw Error(
-      `❌ Sending notification failed after ${RETRIES_MAX_COUNT} retries.`
+  console.log(
+    `📨 Sent successfully: ${results.length - failed}/${results.length}`
+  )
+
+  if (failed > 0) {
+    throw new Error(
+      `Failed to notify ${failed} chat(s).`
     )
   }
 }
 
+// Головний запуск
 async function run() {
   const data = await getShutdownsData()
 
   const groups = data.data?.[data.today] ?? {}
+
   if (!Object.keys(groups).length) {
     console.log("🔋 No schedule for today.")
     return
   }
 
   const schedule = generateSchedule(data)
-  const message = generateMessage(schedule, data.update)
+  const message = generateMessage(
+    schedule,
+    data.update
+  )
 
   await sendNotification(message)
 }
