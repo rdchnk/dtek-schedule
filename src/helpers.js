@@ -1,3 +1,4 @@
+
 import fs from "node:fs"
 import path from "node:path"
 import { LAST_MESSAGE_FILE } from "./constants.js"
@@ -24,6 +25,7 @@ export function createPeriod({ hour, startMin = 0, endMin = 0, power }) {
 export function useSchedule(schedule) {
   const setSchedule = (period) => {
     const last = schedule.at(-1)
+
     if (last?.power === period.power) {
       last.end = period.end
     } else {
@@ -51,32 +53,60 @@ export function getCurrentTime() {
 }
 
 export function checkIsNight() {
-  const hours = new Date().toLocaleString("en-US", {
-    timeZone: "Europe/Kyiv",
-    hour: "numeric",
-    hour12: false,
-  })
+  const hours = Number(
+    new Date().toLocaleString("en-US", {
+      timeZone: "Europe/Kyiv",
+      hour: "numeric",
+      hour12: false,
+    })
+  )
+
   return hours >= 22 || hours < 8
 }
 
-export function loadLastMessage() {
-  if (!fs.existsSync(LAST_MESSAGE_FILE)) return null
+// Окремий файл стану для кожного Telegram-користувача
+function getLastMessageFile(chatId) {
+  if (!/^-?\d+$/.test(String(chatId))) {
+    throw new Error("Invalid Telegram Chat ID")
+  }
+
+  return path.join(
+    path.dirname(LAST_MESSAGE_FILE),
+    `last-message-${chatId}.json`
+  )
+}
+
+// Завантаження останнього повідомлення користувача
+export function loadLastMessage(chatId) {
+  const file = getLastMessageFile(chatId)
+
+  // Підтримка старого файлу для першого користувача
+  const source = fs.existsSync(file)
+    ? file
+    : String(chatId) === String(process.env.TELEGRAM_CHAT_ID) &&
+        fs.existsSync(LAST_MESSAGE_FILE)
+      ? LAST_MESSAGE_FILE
+      : null
+
+  if (!source) return null
 
   const lastMessage = JSON.parse(
-    fs.readFileSync(LAST_MESSAGE_FILE, "utf8").trim()
+    fs.readFileSync(source, "utf8").trim()
   )
 
   if (lastMessage?.date) {
-    const messageDay = new Date(lastMessage.date * 1000).toLocaleDateString(
-      "en-CA",
-      { timeZone: "Europe/Kyiv" }
-    )
+    const messageDay = new Date(
+      lastMessage.date * 1000
+    ).toLocaleDateString("en-CA", {
+      timeZone: "Europe/Kyiv",
+    })
+
     const today = new Date().toLocaleDateString("en-CA", {
       timeZone: "Europe/Kyiv",
     })
 
     if (messageDay < today) {
-      deleteLastMessage()
+      deleteLastMessage(chatId)
       return null
     }
   }
@@ -84,10 +114,19 @@ export function loadLastMessage() {
   return lastMessage
 }
 
-export function saveLastMessage({ date, message_id, scheduleText } = {}) {
-  fs.mkdirSync(path.dirname(LAST_MESSAGE_FILE), { recursive: true })
+// Збереження останнього повідомлення користувача
+export function saveLastMessage(
+  chatId,
+  { date, message_id, scheduleText } = {}
+) {
+  const file = getLastMessageFile(chatId)
+
+  fs.mkdirSync(path.dirname(file), {
+    recursive: true,
+  })
+
   fs.writeFileSync(
-    LAST_MESSAGE_FILE,
+    file,
     JSON.stringify({
       message_id,
       date,
@@ -96,6 +135,13 @@ export function saveLastMessage({ date, message_id, scheduleText } = {}) {
   )
 }
 
-export function deleteLastMessage() {
-  fs.rmSync(LAST_MESSAGE_FILE, { force: true })
+// Видалення стану конкретного користувача
+export function deleteLastMessage(chatId) {
+  const file = getLastMessageFile(chatId)
+
+  fs.rmSync(file, { force: true })
+
+  if (String(chatId) === String(process.env.TELEGRAM_CHAT_ID)) {
+    fs.rmSync(LAST_MESSAGE_FILE, { force: true })
+  }
 }
