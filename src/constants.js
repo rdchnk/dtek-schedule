@@ -34,10 +34,12 @@ export const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID
 
 export const TELEGRAM_CHAT_ID_2 = process.env.TELEGRAM_CHAT_ID_2
 
+export const TELEGRAM_CHAT_ID_3 = process.env.TELEGRAM_CHAT_ID_3
+
 // Список отримувачів без порожніх значень і повторів
 export const TELEGRAM_CHAT_IDS = [
   ...new Set(
-    [TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2]
+    [TELEGRAM_CHAT_ID, TELEGRAM_CHAT_ID_2, TELEGRAM_CHAT_ID_3]
       .map((id) => String(id ?? "").trim())
       .filter(Boolean)
   ),
